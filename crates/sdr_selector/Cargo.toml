@@ -1,0 +1,28 @@
+[package]
+name = "sdr_selector"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Async runtime
+
+# Tokio async runtime
+tokio = { version = "1.42", features = ["full", "rt-multi-thread", "macros"] }
+
+# HTTP client for Steam API
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# Async traits for async functions on traits
+async-trait = "0.1"
+
+# Error handling
+thiserror = "2.0"
+
+# Serialization (for Steam API responses)
+serde = { version = "1.0", features = ["derive"] }
+ping = "0.10.0"
+serde_json = "1.0.151"
+indexmap = { version = "2.14.2", features = ["serde"] }
+iced = "0.14.0"
+strum = { version = "0.26", features = ["derive"] }
+strum_macros = "0.28.0"
