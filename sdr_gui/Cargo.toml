@@ -1,5 +1,6 @@
 [package]
 name = "sdr_gui"
+edition.workspace = true
 version.workspace = true
 authors.workspace = true
 repository.workspace = true
@@ -15,9 +16,4 @@ eula = false
 tokio = { version = "1.42", features = ["full", "rt-multi-thread", "macros"] }
 iced = "0.14.0"
 sdr_selector = { version = "0.1.0", path = "../crates/sdr_selector" }
-
-[profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
+thiserror = "2.0.21"

@@ -1,5 +1,6 @@
 [package]
 name = "sdr_selector"
+edition.workspace = true
 version.workspace = true
 authors.workspace = true
 repository.workspace = true

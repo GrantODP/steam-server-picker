@@ -3171,6 +3171,7 @@ version = "0.1.0"
 dependencies = [
  "iced",
  "sdr_selector",
+ "thiserror 2.0.21",
  "tokio",
 ]
 
