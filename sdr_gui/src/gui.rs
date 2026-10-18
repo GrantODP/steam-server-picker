@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     println,
-    sync::{Arc, RwLock},
+    sync::{Arc, Mutex, RwLock},
     time::Duration,
 };
 
@@ -10,16 +10,16 @@ use iced::{
     widget::{Button, Column, Row, button, column, container, pick_list, row, scrollable, text},
 };
 
+use crate::TOKIO_HANDLE;
 use sdr_selector::{
     firewall::{FirewallState, RelayPolicy, Rule},
     games::{GameID, IntoEnumIterator, SteamGame},
     picker::{GameServers, PolicyProducer},
-    relay::Ping,
+    relay::{Ping, RelayData},
     scanner::{RelayId, fetch_save_game_relays_cache},
     system::get_cache_dir,
 };
-use tokio::sync::Mutex;
-use crate::TOKIO_HANDLE;
+// use tokio::sync::Mutex;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum Message {
@@ -32,6 +32,7 @@ pub enum Message {
     Relay(RelayMessage),
     Init,
     LoadRelays,
+    LoadPings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
@@ -39,6 +40,7 @@ pub enum RelayMessage {
     #[default]
     None,
     RequestPing(RelayId),
+    RequestPingAll,
     UpdateFirewall(RelayId, Rule),
 }
 
@@ -72,7 +74,7 @@ pub fn relay_state_view(
     shrt_name: &str,
     name: &str,
     rule_state: &Rule,
-    latency_ms: Duration,
+    ping: PingStatus,
 ) -> Element<'static, Message> {
     let (status, action) = match rule_state {
         Rule::Allow => (
@@ -95,9 +97,7 @@ pub fn relay_state_view(
     let content = row![
         text!("{}", shrt_name).size(18).width(60),
         text!("{}", name).width(Length::Fill), // takes the leftover space
-        text(format!("{} ms", latency_ms.as_millis()))
-            .style(text::secondary)
-            .width(80),
+        text(ping_text(ping)).style(text::secondary).width(80),
         status.width(80),
         action,
     ]
@@ -111,11 +111,19 @@ pub fn relay_state_view(
         .into()
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+pub enum PingStatus {
+    Pending,
+    Pinged(Duration),
+    #[default]
+    NotPinged,
+}
+
 pub struct RelayHolders {
     game: GameID,
     picker: Arc<RwLock<GameServers>>,
     firewall: Arc<RwLock<FirewallState>>,
-    pings: Arc<Mutex<HashMap<RelayId, Duration>>>,
+    pings: Arc<Mutex<HashMap<RelayId, PingStatus>>>,
 }
 
 impl RelayHolders {
@@ -132,6 +140,7 @@ impl RelayHolders {
     pub fn init(&self) -> Task<Message> {
         println!("initializing");
         self.load_relays();
+        self.load_pings();
 
         Task::none()
     }
@@ -178,7 +187,10 @@ impl RelayHolders {
             println!("Changing game");
             self.game = game.clone();
             *guard = GameServers::new(game);
-            return Task::done(Message::LoadRelays);
+            return Task::batch(vec![
+                Task::done(Message::LoadRelays),
+                Task::done(Message::LoadPings),
+            ]);
         }
         Task::none()
     }
@@ -240,7 +252,7 @@ impl RelayHolders {
     }
 
     pub fn ping_button(&self) -> Element<'_, Message> {
-        let message = Message::Relay((RelayMessage::RequestPing(EMPTY_ID)));
+        let message = Message::Relay((RelayMessage::RequestPingAll));
         container(button("Ping All").style(button::success).on_press(message))
             .width(Length::Fill)
             .center_x(Length::Fill)
@@ -257,6 +269,7 @@ impl RelayHolders {
             Message::UpdateRelays => self.update_relays(),
             Message::LoadRelays => self.load_relays(),
             Message::ChangeGame(game_id) => self.change_game(game_id),
+            Message::LoadPings => self.load_pings(),
 
             _ => Task::none(),
         }
@@ -266,20 +279,26 @@ impl RelayHolders {
         if id == EMPTY_ID {
             return self.ping_all();
         }
-
         if let Ok(picker) = &self.picker.read() {
             let data = picker.relay_owned(&id);
             if let Some(data) = data {
-                println!("MAKING PINGS");
-                return Task::perform(
-                    async move {
-                        let ping = data.ping().await;
-                        println!("PING {}", ping.latency_ms.as_millis());
-                        ping
-                    },
-                    move |latency| Message::UpdatePing(id, latency.latency_ms),
-                );
+                return ping_data(id, data);
             }
+        }
+
+        Task::none()
+    }
+    fn batch_request_ping(&self) -> Task<Message> {
+        if let Ok(picker) = self.picker.read() {
+            let relays: Vec<(RelayId, RelayData)> = picker
+                .relays()
+                .iter()
+                .map(|(id, _)| {
+                    return (**id, picker.relay_owned(id).unwrap());
+                })
+                .collect();
+
+            return Task::batch(relays.into_iter().map(|(id, data)| ping_data(id, data)));
         }
 
         Task::none()
@@ -301,28 +320,74 @@ impl RelayHolders {
         }
         Task::none()
     }
+    fn set_pinging_all(&self) {
+        let pings = self.pings.lock();
+        if let Ok(mut ping) = pings {
+            for (_, ping) in ping.iter_mut() {
+                *ping = PingStatus::Pending
+            }
+        }
+    }
+
+    fn set_pinging(&self, id: &RelayId) {
+        let pings = self.pings.lock();
+        if let Ok(mut ping) = pings {
+            if let Some(status) = ping.get_mut(id) {
+                *status = PingStatus::Pending
+            }
+        }
+    }
 
     pub fn ping_all(&self) -> Task<Message> {
-        if let Ok(picker) = self.picker.read() {
-            let ids: Vec<RelayId> = picker.relay_ids().map(|id| *id).collect();
-            return Task::batch(ids.into_iter().map(|id| self.request_ping(id)));
-        }
-        Task::none()
+        self.set_pinging_all();
+        self.batch_request_ping()
     }
 
     fn handle_relay(&mut self, relay_message: RelayMessage) -> Task<Message> {
         match relay_message {
             RelayMessage::RequestPing(id) => self.request_ping(id),
             RelayMessage::UpdateFirewall(id, rule) => self.handle_firewall_rule(id, rule),
-
+            RelayMessage::None => Task::none(),
+            RelayMessage::RequestPingAll => self.ping_all(),
             _ => Task::none(),
         }
     }
 
     fn update_ping(&mut self, id: u64, latency: Duration) -> Task<Message> {
         if let Ok(mut pings) = self.pings.try_lock() {
-            pings.insert(id.into(), latency);
+            pings.insert(id.into(), PingStatus::Pinged(latency));
         }
         Task::none()
     }
+
+    fn load_pings(&self) -> Task<Message> {
+        if let Ok(picker) = self.picker.read() {
+            if let Ok(mut pings) = self.pings.lock() {
+                for id in picker.relay_ids() {
+                    pings.insert(*id, PingStatus::NotPinged);
+                }
+            }
+        }
+        Task::none()
+    }
+}
+
+fn ping_text(ping: PingStatus) -> String {
+    let text = match ping {
+        PingStatus::Pending => "Pinging".into(),
+        PingStatus::Pinged(duration) => format!("{}ms", duration.as_millis()),
+        PingStatus::NotPinged => "Not pinged".into(),
+    };
+    text
+}
+
+fn ping_data(id: RelayId, data: RelayData) -> Task<Message> {
+    Task::perform(
+        async move {
+            let ping = data.ping().await;
+            println!("PING {}", ping.latency_ms.as_millis());
+            ping
+        },
+        move |latency| Message::UpdatePing(id, latency.latency_ms),
+    )
 }
