@@ -6,11 +6,11 @@ authors.workspace = true
 repository.workspace = true
 license.workspace = true
 
-[package.metadata.wix]
-upgrade-guid = "4BCE8D4E-F1AB-463F-8877-5517151E09BA"
-path-guid = "98453100-8385-42BE-9AA8-EF218180F150"
-license = false
-eula = false
+
+[[bin]]
+name = "sdr_gui"
+path = "src/main.rs"
+
 
 [dependencies]
 tokio = { version = "1.42", features = ["full", "rt-multi-thread", "macros"] }
