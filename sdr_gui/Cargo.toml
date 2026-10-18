@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.42", features = ["full", "rt-multi-thread", "macros"] }
 iced = "0.14.0"
-sdr_selector = { version = "0.1.0", path = "crates/sdr_selector" }
+sdr_selector = { version = "0.1.0", path = "../crates/sdr_selector" }
